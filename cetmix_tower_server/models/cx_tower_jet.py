@@ -168,6 +168,19 @@ class CxTowerJet(models.Model):
         copy=False,
     )
 
+    # -- Waypoints
+    waypoint_ids = fields.One2many(
+        comodel_name="cx.tower.jet.waypoint",
+        inverse_name="jet_id",
+        string="Waypoints",
+        help="Waypoints of the jet",
+        copy=False,
+    )
+    waypoint_id = fields.Many2one(
+        comodel_name="cx.tower.jet.waypoint",
+        help="Current waypoint of the jet",
+    )
+
     # -- Variables used for configuration
     variable_value_ids = fields.One2many(
         inverse_name="jet_id",

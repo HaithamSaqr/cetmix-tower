@@ -433,6 +433,23 @@ class TestTowerJetsCommon(TestTowerCommon):
             }
         )
 
+        # Create waypoint template for testing
+        cls.waypoint_template = cls.env["cx.tower.jet.waypoint.template"].create(
+            {
+                "name": "Test Waypoint Template",
+                "jet_template_id": cls.jet_template_test.id,
+            }
+        )
+
+        # Create waypoint for testing
+        cls.waypoint = cls.env["cx.tower.jet.waypoint"].create(
+            {
+                "name": "Test Waypoint",
+                "jet_id": cls.jet_test.id,
+                "waypoint_template_id": cls.waypoint_template.id,
+            }
+        )
+
         # Model references reused by helpers
         cls.JetDependency = cls.env["cx.tower.jet.dependency"]
 

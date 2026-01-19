@@ -36,3 +36,4 @@ from . import test_jet_action_access
 from . import test_jet_create_wizard
 from . import test_jet_state
 from . import test_jet
+from . import test_jet_waypoint
