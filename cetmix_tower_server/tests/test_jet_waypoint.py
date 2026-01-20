@@ -1,6 +1,8 @@
 # Copyright (C) 2024 Cetmix OÜ
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
+from odoo.exceptions import ValidationError
+
 from .common_jets import TestTowerJetsCommon
 
 
@@ -33,6 +35,49 @@ class TestTowerJetWaypoint(TestTowerJetsCommon):
             }
         )
         # waypoint_template and waypoint are now inherited from TestTowerJetsCommon
+
+        # Create commands for flight plans
+        cls.command_success = cls.Command.create(
+            {
+                "name": "Command -> Success",
+                "action": "python_code",
+                "code": "# Just return default values",
+            }
+        )
+        cls.command_error = cls.Command.create(
+            {
+                "name": "Command -> Error",
+                "action": "python_code",
+                "code": "result = {'exit_code': -100, 'message': 'Error'}",
+            }
+        )
+
+        # Create flight plans
+        cls.plan_success = cls.Plan.create(
+            {
+                "name": "Waypoint Success Plan",
+            }
+        )
+        cls.plan_line.create(
+            {
+                "sequence": 10,
+                "plan_id": cls.plan_success.id,
+                "command_id": cls.command_success.id,
+            }
+        )
+
+        cls.plan_error = cls.Plan.create(
+            {
+                "name": "Waypoint Error Plan",
+            }
+        )
+        cls.plan_line.create(
+            {
+                "sequence": 10,
+                "plan_id": cls.plan_error.id,
+                "command_id": cls.command_error.id,
+            }
+        )
 
     def test_save_variable_values_empty(self):
         """
@@ -338,4 +383,769 @@ class TestTowerJetWaypoint(TestTowerJetsCommon):
         self.assertIsNone(
             self.jet_test.get_variable_value("test_var_3", no_fallback=True),
             "Variable 3 should be removed",
+        )
+
+    def test_write_waypoint_template_draft_allowed(self):
+        """
+        Test that modifying waypoint_template_id is allowed when state is draft
+        """
+        # Create waypoint in draft state
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint Draft",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "draft",
+            }
+        )
+
+        # Should be able to change template in draft state
+        waypoint.write({"waypoint_template_id": self.waypoint_template_2.id})
+        self.assertEqual(
+            waypoint.waypoint_template_id.id,
+            self.waypoint_template_2.id,
+            "Should be able to change template in draft state",
+        )
+
+    def test_write_waypoint_template_not_draft_raises_error(self):
+        """
+        Test that modifying waypoint_template_id raises ValidationError
+        when state is not draft
+        """
+        # Create waypoint in ready state
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint Ready",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "ready",
+            }
+        )
+
+        # Should raise ValidationError when trying to change template
+        with self.assertRaises(ValidationError) as context:
+            waypoint.write({"waypoint_template_id": self.waypoint_template_2.id})
+
+        self.assertIn(
+            "draft state",
+            str(context.exception),
+            "Should raise ValidationError about draft state",
+        )
+
+    def test_write_waypoint_template_same_value_allowed(self):
+        """
+        Test that setting waypoint_template_id to the same value is allowed
+        even when not in draft state
+        """
+        # Create waypoint in ready state
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint Ready",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "ready",
+            }
+        )
+        original_template_id = waypoint.waypoint_template_id.id
+
+        # Should be able to set to the same template
+        waypoint.write({"waypoint_template_id": original_template_id})
+        self.assertEqual(
+            waypoint.waypoint_template_id.id,
+            original_template_id,
+            "Should be able to set same template value",
+        )
+
+    def test_write_other_fields_not_draft_allowed(self):
+        """
+        Test that modifying other fields is allowed when state is not draft
+        """
+        # Create waypoint in ready state
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint Ready",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "ready",
+            }
+        )
+
+        # Should be able to modify other fields
+        waypoint.write({"name": "Updated Name"})
+        self.assertEqual(
+            waypoint.name,
+            "Updated Name",
+            "Should be able to modify other fields when not in draft",
+        )
+
+    def test_prepare_without_flight_plan(self):
+        """
+        Test prepare() when waypoint template has no plan_create_id
+        """
+        # Create waypoint template without plan_create_id
+        waypoint_template_no_plan = self.JetWaypointTemplate.create(
+            {
+                "name": "Test Waypoint Template No Plan",
+                "jet_template_id": self.jet_template_test.id,
+            }
+        )
+
+        # Create waypoint in draft state
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint No Plan",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": waypoint_template_no_plan.id,
+                "state": "draft",
+            }
+        )
+
+        # Call prepare
+        result = waypoint.prepare()
+
+        # Should return True and set state to ready
+        self.assertTrue(result, "Should return True")
+        self.assertEqual(
+            waypoint.state,
+            "ready",
+            "State should be set to ready when no flight plan",
+        )
+
+    def test_prepare_with_flight_plan_success(self):
+        """
+        Test prepare() when waypoint template has plan_create_id and plan succeeds
+        """
+        # Set template to use success plan
+        self.waypoint_template.plan_create_id = self.plan_success.id
+
+        # Create waypoint in draft state
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint With Plan",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "draft",
+            }
+        )
+
+        # Call prepare - plan executes synchronously in tests
+        result = waypoint.prepare()
+
+        # Should return True
+        self.assertTrue(result, "Should return True")
+
+        # State should be set to current after successful plan completion
+        # (plan executes synchronously in tests)
+        self.assertEqual(
+            waypoint.state,
+            "current",
+            "State should be set to current after successful plan completion",
+        )
+        # Waypoint should be set as current waypoint
+        self.assertEqual(
+            self.jet_test.waypoint_id.id,
+            waypoint.id,
+            "Waypoint should be set as current waypoint after successful prepare",
+        )
+
+    def test_prepare_with_flight_plan_error(self):
+        """
+        Test prepare() when waypoint template has plan_create_id and plan fails
+        """
+        # Set template to use error plan
+        self.waypoint_template.plan_create_id = self.plan_error.id
+
+        # Create waypoint in draft state
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint With Plan Error",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "draft",
+            }
+        )
+
+        # Call prepare - plan executes synchronously in tests
+        result = waypoint.prepare()
+
+        # Should return True
+        self.assertTrue(result, "Should return True")
+
+        # State should be set to error after failed plan completion
+        # (plan executes synchronously in tests)
+        self.assertEqual(
+            waypoint.state,
+            "error",
+            "State should be set to error after failed plan completion",
+        )
+        # Waypoint should not be set as current waypoint on error
+        self.assertNotEqual(
+            self.jet_test.waypoint_id.id,
+            waypoint.id,
+            "Waypoint should not be set as current waypoint after failed prepare",
+        )
+
+    def test_prepare_not_draft_state(self):
+        """
+        Test prepare() when waypoint is not in draft state
+        """
+        # Create waypoint in ready state
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint Ready",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "ready",
+            }
+        )
+
+        # Call prepare
+        result = waypoint.prepare()
+
+        # Should return False and not change state
+        self.assertFalse(result, "Should return False when not in draft state")
+        self.assertEqual(
+            waypoint.state,
+            "ready",
+            "State should remain ready when not in draft",
+        )
+
+    def test_plan_finished_preparing_success(self):
+        """
+        Test _plan_finished when waypoint is in preparing state and plan succeeds
+        """
+        # Create waypoint in preparing state (simulating async plan execution)
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint Preparing",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "preparing",
+            }
+        )
+
+        # Create plan log with success status
+        plan_log = self.PlanLog.create(
+            {
+                "server_id": self.jet_test.server_id.id,
+                "plan_id": self.plan_success.id,
+                "plan_status": 0,  # Success
+            }
+        )
+
+        # Call _plan_finished
+        result = waypoint._plan_finished(plan_log)
+
+        # Should return True
+        self.assertTrue(result, "Should return True")
+        # State should be set to current
+        # (waypoint becomes current after successful prepare)
+        self.assertEqual(
+            waypoint.state,
+            "current",
+            "State should be set to current after successful plan completion",
+        )
+        # Waypoint should be set as current waypoint
+        self.assertEqual(
+            self.jet_test.waypoint_id.id,
+            waypoint.id,
+            "Waypoint should be set as current waypoint after successful prepare",
+        )
+
+    def test_plan_finished_arriving_success(self):
+        """
+        Test _plan_finished when waypoint is in arriving state and plan succeeds
+        """
+        # Create waypoint in arriving state (simulating async plan execution)
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint Arriving",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "arriving",
+            }
+        )
+
+        # Create plan log with success status
+        plan_log = self.PlanLog.create(
+            {
+                "server_id": self.jet_test.server_id.id,
+                "plan_id": self.plan_success.id,
+                "plan_status": 0,  # Success
+            }
+        )
+
+        # Call _plan_finished
+        result = waypoint._plan_finished(plan_log)
+
+        # Should return True
+        self.assertTrue(result, "Should return True")
+        # State should be set to current
+        # (waypoint becomes current after successful arrive)
+        self.assertEqual(
+            waypoint.state,
+            "current",
+            "State should be set to current after successful plan completion",
+        )
+        # Waypoint should be set as current waypoint
+        self.assertEqual(
+            self.jet_test.waypoint_id.id,
+            waypoint.id,
+            "Waypoint should be set as current waypoint after successful arrive",
+        )
+
+    def test_plan_finished_leaving_success(self):
+        """
+        Test _plan_finished when waypoint is in leaving state and plan succeeds
+        """
+        # Create current waypoint in current state
+        current_waypoint = self.JetWaypoint.create(
+            {
+                "name": "Current Waypoint",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "current",
+            }
+        )
+        self.jet_test.waypoint_id = current_waypoint.id
+
+        # Create destination waypoint in arriving state
+        destination_waypoint = self.JetWaypoint.create(
+            {
+                "name": "Destination Waypoint",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "arriving",
+            }
+        )
+
+        # Set current waypoint to leaving state
+        current_waypoint.state = "leaving"
+
+        # Create plan log with success status
+        plan_log = self.PlanLog.create(
+            {
+                "server_id": self.jet_test.server_id.id,
+                "plan_id": self.plan_success.id,
+                "plan_status": 0,  # Success
+            }
+        )
+
+        # Call _plan_finished on leaving waypoint
+        result = current_waypoint._plan_finished(plan_log)
+
+        # Should return True
+        self.assertTrue(result, "Should return True")
+        # Leaving waypoint state should be set to ready
+        self.assertEqual(
+            current_waypoint.state,
+            "ready",
+            "Leaving waypoint state should be set to ready",
+        )
+        # Destination waypoint should have arrive() called
+        # (state should be current if no plan_arrive_id)
+        # Since waypoint_template has no plan_arrive_id by default,
+        # arrive() sets state to current
+        self.assertEqual(
+            destination_waypoint.state,
+            "current",
+            "Destination waypoint should have arrive() called",
+        )
+        # Destination waypoint should be set as current waypoint
+        self.assertEqual(
+            self.jet_test.waypoint_id.id,
+            destination_waypoint.id,
+            "Destination waypoint should be set as current waypoint"
+            " after leaving completes",
+        )
+
+    def test_plan_finished_deleting_success(self):
+        """
+        Test _plan_finished when waypoint is in deleting state and plan succeeds
+        """
+        # Create waypoint and set it as current
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint Deleting",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "ready",
+            }
+        )
+        self.jet_test.waypoint_id = waypoint.id
+
+        # Set waypoint to deleting state
+        waypoint.state = "deleting"
+
+        # Create plan log with success status
+        plan_log = self.PlanLog.create(
+            {
+                "server_id": self.jet_test.server_id.id,
+                "plan_id": self.plan_success.id,
+                "plan_status": 0,  # Success
+            }
+        )
+
+        # Call _plan_finished
+        result = waypoint._plan_finished(plan_log)
+
+        # Should return True
+        self.assertTrue(result, "Should return True")
+        # Waypoint should be unlinked (deleted)
+        self.assertFalse(
+            waypoint.exists(),
+            "Waypoint should be unlinked after successful delete plan",
+        )
+        # Jet waypoint_id should be set to False
+        self.assertFalse(
+            self.jet_test.waypoint_id,
+            "Jet waypoint_id should be set to False after successful delete",
+        )
+
+    def test_plan_finished_error(self):
+        """
+        Test _plan_finished when plan fails (plan_status != 0)
+        """
+        # Create waypoint in preparing state (simulating async plan execution)
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint Preparing",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "preparing",
+            }
+        )
+        original_waypoint_id = (
+            self.jet_test.waypoint_id.id if self.jet_test.waypoint_id else False
+        )
+
+        # Create plan log with error status
+        plan_log = self.PlanLog.create(
+            {
+                "server_id": self.jet_test.server_id.id,
+                "plan_id": self.plan_error.id,
+                "plan_status": 1,  # Error
+            }
+        )
+
+        # Call _plan_finished
+        result = waypoint._plan_finished(plan_log)
+
+        # Should return True
+        self.assertTrue(result, "Should return True")
+        # State should be set to error
+        self.assertEqual(
+            waypoint.state,
+            "error",
+            "State should be set to error after failed plan completion",
+        )
+        # Waypoint should not be set as current waypoint
+        if original_waypoint_id:
+            self.assertEqual(
+                self.jet_test.waypoint_id.id,
+                original_waypoint_id,
+                "Current waypoint should not change on error",
+            )
+        else:
+            self.assertFalse(
+                self.jet_test.waypoint_id,
+                "Current waypoint should remain False on error",
+            )
+
+    def test_plan_finished_error_arriving(self):
+        """
+        Test _plan_finished when waypoint is in arriving state and plan fails
+        """
+        # Create waypoint in arriving state
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint Arriving",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "arriving",
+            }
+        )
+
+        # Create plan log with error status
+        plan_log = self.PlanLog.create(
+            {
+                "server_id": self.jet_test.server_id.id,
+                "plan_id": self.plan_error.id,
+                "plan_status": 1,  # Error
+            }
+        )
+
+        # Call _plan_finished
+        result = waypoint._plan_finished(plan_log)
+
+        # Should return True
+        self.assertTrue(result, "Should return True")
+        # State should be set to error
+        self.assertEqual(
+            waypoint.state,
+            "error",
+            "State should be set to error after failed plan completion",
+        )
+        # Waypoint should not be set as current waypoint on error
+        self.assertNotEqual(
+            self.jet_test.waypoint_id.id if self.jet_test.waypoint_id else False,
+            waypoint.id,
+            "Waypoint should not be set as current waypoint after failed arrive",
+        )
+
+    def test_get_custom_variable_values_with_metadata(self):
+        """
+        Test _get_custom_variable_values with metadata
+        """
+        # Set template to use success plan
+        self.waypoint_template.plan_create_id = self.plan_success.id
+
+        # Create waypoint with metadata
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint With Metadata",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "draft",
+                "metadata": {"key1": "value1", "key2": "value2", "env": "production"},
+            }
+        )
+
+        # Call prepare to trigger flight plan
+        waypoint.prepare()
+
+        # Find the plan log created by prepare
+        plan_log = self.PlanLog.search(
+            [
+                ("waypoint_id", "=", waypoint.id),
+            ],
+            order="create_date desc",
+            limit=1,
+        )
+        self.assertTrue(plan_log, "Plan log should be created")
+
+        # Check custom variable values in plan log
+        self.assertEqual(
+            plan_log.variable_values.get("__waypoint"),
+            waypoint.reference,
+            "__waypoint should match waypoint reference",
+        )
+        self.assertEqual(
+            plan_log.variable_values.get("__waypoint_type"),
+            self.waypoint_template.reference,
+            "__waypoint_type should match waypoint template reference",
+        )
+        self.assertEqual(
+            plan_log.variable_values.get("__waypoint_state"),
+            "preparing",
+            "__waypoint_state should be preparing",
+        )
+        # Check metadata keys
+        self.assertEqual(
+            plan_log.variable_values.get("__waypoint_key1"),
+            "value1",
+            "__waypoint_key1 should match metadata value",
+        )
+        self.assertEqual(
+            plan_log.variable_values.get("__waypoint_key2"),
+            "value2",
+            "__waypoint_key2 should match metadata value",
+        )
+        self.assertEqual(
+            plan_log.variable_values.get("__waypoint_env"),
+            "production",
+            "__waypoint_env should match metadata value",
+        )
+
+    def test_get_custom_variable_values_without_metadata(self):
+        """
+        Test _get_custom_variable_values without metadata
+        """
+        # Set template to use success plan
+        self.waypoint_template.plan_create_id = self.plan_success.id
+
+        # Create waypoint without metadata
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint Without Metadata",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "draft",
+            }
+        )
+
+        # Call prepare to trigger flight plan
+        waypoint.prepare()
+
+        # Find the plan log created by prepare
+        plan_log = self.PlanLog.search(
+            [("waypoint_id", "=", waypoint.id)],
+            order="create_date desc",
+            limit=1,
+        )
+        self.assertTrue(plan_log, "Plan log should be created")
+
+        # Check basic custom variable values
+        self.assertEqual(
+            plan_log.variable_values.get("__waypoint"),
+            waypoint.reference,
+            "__waypoint should match waypoint reference",
+        )
+        self.assertEqual(
+            plan_log.variable_values.get("__waypoint_type"),
+            self.waypoint_template.reference,
+            "__waypoint_type should match waypoint template reference",
+        )
+        self.assertEqual(
+            plan_log.variable_values.get("__waypoint_state"),
+            "preparing",
+            "__waypoint_state should be preparing",
+        )
+        # Check that metadata keys are not present
+        self.assertNotIn(
+            "__waypoint_key1",
+            plan_log.variable_values,
+            "Metadata keys should not be present when metadata is empty",
+        )
+
+    def test_leave_from_current_state(self):
+        """
+        Test leave() when waypoint is in current state
+        """
+        # Create waypoint in current state
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint Current",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "current",
+            }
+        )
+        self.jet_test.waypoint_id = waypoint.id
+
+        # Call leave
+        result = waypoint.leave()
+
+        # Should return True
+        self.assertTrue(result, "Should return True")
+        # State should be set to ready
+        # (leave() completes immediately when no plan_leave_id in tests)
+        self.assertEqual(
+            waypoint.state,
+            "ready",
+            "State should be set to ready after leaving completes",
+        )
+
+    def test_fly_to_from_current_waypoint(self):
+        """
+        Test fly_to() when previous waypoint is in current state
+        """
+        # Create current waypoint
+        current_waypoint = self.JetWaypoint.create(
+            {
+                "name": "Current Waypoint",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "current",
+            }
+        )
+        self.jet_test.waypoint_id = current_waypoint.id
+
+        # Create destination waypoint
+        destination_waypoint = self.JetWaypoint.create(
+            {
+                "name": "Destination Waypoint",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "ready",
+            }
+        )
+
+        # Call fly_to on destination waypoint
+        result = destination_waypoint.fly_to()
+
+        # Should return True
+        self.assertTrue(result, "Should return True")
+        # Current waypoint should be in ready state
+        # (leave() completes immediately when no plan_leave_id in tests)
+        self.assertEqual(
+            current_waypoint.state,
+            "ready",
+            "Current waypoint should be in ready state after leaving completes",
+        )
+        # Destination waypoint should be in current state
+        # (arrive() completes immediately when no plan_arrive_id in tests)
+        self.assertEqual(
+            destination_waypoint.state,
+            "current",
+            "Destination waypoint should be in current state after arriving",
+        )
+        # Destination waypoint should be set as current waypoint
+        self.assertEqual(
+            self.jet_test.waypoint_id.id,
+            destination_waypoint.id,
+            "Destination waypoint should be set as current waypoint",
+        )
+
+    def test_unlink_current_state_raises_error(self):
+        """
+        Test unlink() when waypoint is in current state raises ValidationError
+        """
+        # Create waypoint in current state
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint Current",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "current",
+            }
+        )
+        self.jet_test.waypoint_id = waypoint.id
+
+        # Should raise ValidationError when trying to delete
+        with self.assertRaises(ValidationError) as context:
+            waypoint.unlink()
+
+        self.assertIn(
+            "current waypoint",
+            str(context.exception),
+            "Should raise ValidationError about current waypoint",
+        )
+
+    def test_unlink_current_state_with_no_raise_context(self):
+        """
+        Test unlink() when waypoint is in current state
+        with 'waypoint_no_raise_on_delete' context.
+        The context prevents exception but waypoint is not deleted.
+        """
+        # Create waypoint in current state
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint Current",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "current",
+            }
+        )
+        self.jet_test.waypoint_id = waypoint.id
+        waypoint_id = waypoint.id
+
+        # Should not raise error with waypoint_no_raise_on_delete context
+        waypoint.with_context(waypoint_no_raise_on_delete=True).unlink()
+
+        # Waypoint should still exist (not deleted)
+        # The context only prevents exception, but doesn't allow deletion
+        self.assertTrue(
+            waypoint.exists(),
+            "Waypoint should still exist - context only prevents exception",
+        )
+        self.assertEqual(
+            waypoint.id,
+            waypoint_id,
+            "Waypoint ID should remain the same",
+        )
+        self.assertEqual(
+            waypoint.state,
+            "current",
+            "Waypoint state should remain current",
         )

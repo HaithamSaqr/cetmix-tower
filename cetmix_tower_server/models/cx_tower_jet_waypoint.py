@@ -1,7 +1,8 @@
 # Copyright (C) 2024 Cetmix OÜ
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
-from odoo import api, fields, models
+from odoo import _, api, fields, models
+from odoo.exceptions import ValidationError
 
 
 class CxTowerJetWaypoint(models.Model):
@@ -24,18 +25,14 @@ class CxTowerJetWaypoint(models.Model):
             ("error", "Error"),
             ("arriving", "Arriving"),
             ("leaving", "Leaving"),
+            ("current", "Current"),
             ("deleting", "Deleting"),
         ],
         default="draft",
         required=True,
-        readonly=False,
     )
-    can_fly = fields.Boolean(
-        compute="_compute_can_fly",
-        readonly=True,
-    )
-    is_current = fields.Boolean(
-        compute="_compute_is_current",
+    can_fly_to = fields.Boolean(
+        compute="_compute_can_fly_to",
         readonly=True,
     )
     jet_id = fields.Many2one(
@@ -77,30 +74,101 @@ class CxTowerJetWaypoint(models.Model):
         for waypoint in self:
             waypoint.access_level = waypoint.waypoint_template_id.access_level
 
-    @api.depends("jet_id.waypoint_id")
-    def _compute_is_current(self):
-        """
-        Is current waypoint if it is the current waypoint of the jet
-        """
-        for waypoint in self:
-            waypoint.is_current = waypoint.id == waypoint.jet_id.waypoint_id.id
-
     @api.depends("jet_id.waypoint_ids", "jet_id.waypoint_ids.state")
-    def _compute_can_fly(self):
+    def _compute_can_fly_to(self):
         """
         Can fly only if waypoint is in the ready state and
         is not the current waypoint and all the jet waypoints
         are in the "ready" state
         """
         for waypoint in self:
-            all_waypoints = waypoint.jet_id.waypoint_ids
-            waypoint.can_fly = (
-                waypoint.state == "ready"
-                and waypoint.id != waypoint.jet_id.waypoint_id.id
-                and not bool(
-                    all_waypoints.filtered(lambda w: w.state not in ["ready", "error"])
-                )
+            waypoint.can_fly_to = waypoint.state == "ready"
+
+    # ------------------------------------
+    # --------- CRUD Methods -------------
+    # ------------------------------------
+    def write(self, vals):
+        """
+        Write. Do not allow to modify the template
+        if the waypoint is not in the draft state
+        """
+        if "waypoint_template_id" in vals and not vals.get("state") == "draft":
+            for waypoint in self:
+                if (
+                    waypoint.waypoint_template_id.id != vals.get("waypoint_template_id")
+                    and waypoint.state != "draft"
+                ):
+                    raise ValidationError(
+                        _(
+                            "Cannot change waypoint type for %(waypoint)s "
+                            "because it is not in the draft state",
+                            waypoint=waypoint.name,
+                        )
+                    )
+        return super().write(vals)
+
+    def unlink(self):
+        """
+        Unlink.
+
+        Raises:
+            ValidationError: If the waypoint cannot be deleted
+                set the context value 'waypoint_no_raise_on_delete' to True
+                for not to raise the exception.
+        """
+        # Deletable waypoints:
+        # - are in the 'draft' or 'deleting' state
+        # - waypoint is in the 'ready' or 'error' state and template
+        #   doesn't have on_delete flight plan
+        # Non-deletable waypoints:
+        # - are in the 'arriving', 'leaving' or 'preparing' state
+        #   or is the current waypoint of the jet
+        # Need to run the on_delete flight plan:
+        # - waypoint is in the 'ready' or 'error' state and template has
+        #  on_delete flight plan
+
+        waypoints_to_delete = self.browse()
+        waypoints_to_run_delete_plan = self.browse()
+        for waypoint in self:
+            if waypoint.state in ["arriving", "leaving", "preparing", "current"]:
+                if self._context.get("waypoint_no_raise_on_delete"):
+                    continue
+                if waypoint.state == "current":
+                    exception_message = _(
+                        "Cannot delete the waypoint %(waypoint)s because it is"
+                        " the current waypoint of the jet %(jet)s",
+                        waypoint=waypoint.name,
+                        jet=waypoint.jet_id.name,
+                    )
+                else:
+                    exception_message = _(
+                        "Cannot delete the waypoint %(waypoint)s because it is"
+                        " in the %(state)s state",
+                        waypoint=waypoint.name,
+                        state=waypoint.state,
+                    )
+                raise ValidationError(exception_message)
+            if (
+                waypoint.state in ["ready", "error"]
+                and waypoint.waypoint_template_id.plan_delete_id
+            ):
+                waypoints_to_run_delete_plan |= waypoint
+                continue
+            waypoints_to_delete |= waypoint
+
+        if waypoints_to_delete:
+            result = super(CxTowerJetWaypoint, waypoints_to_delete).unlink()
+        else:
+            result = True
+
+        for waypoint in waypoints_to_run_delete_plan:
+            waypoint.state = "deleting"
+            waypoint.jet_id.run_flight_plan(
+                flight_plan=waypoint.waypoint_template_id.plan_delete_id,
+                plan_log={"waypoint_id": waypoint.id},
+                variable_values=waypoint._get_custom_variable_values(),
             )
+        return result
 
     # ------------------------------------
     # --------- Waypoint Setters ---------
@@ -117,11 +185,18 @@ class CxTowerJetWaypoint(models.Model):
             return False
         if self.waypoint_template_id.plan_create_id:
             self.state = "preparing"
+            # Warning! Explicit commit!
+            # This is needed to ensure that the waypoint state is changed
+            # before the create plan is run.
+            # This is also needed to avoid race conditions with other transactions.
+            if not self.env.context.get("cetmix_tower_no_commit"):
+                self.env.cr.commit()  # pylint: disable=invalid-commit
             self.jet_id.run_flight_plan(
                 flight_plan=self.waypoint_template_id.plan_create_id,
                 plan_log={
                     "waypoint_id": self.id,
                 },
+                variable_values=self._get_custom_variable_values(),
             )
         else:
             self.state = "ready"
@@ -132,7 +207,7 @@ class CxTowerJetWaypoint(models.Model):
         Fly to the waypoint
         """
         self.ensure_one()
-        if not self.state == "ready":
+        if self.state != "ready":
             return False
 
         # Cannot fly to waypoint if there is another waypoint
@@ -143,27 +218,27 @@ class CxTowerJetWaypoint(models.Model):
             return False
 
         # Leave the previous waypoint
-        current_waypoint = self.jet_id.waypoint_id
-        if not current_waypoint:
+        previous_waypoint = self.jet_id.waypoint_id
+        if not previous_waypoint:
             self.state = "arriving"
             self.arrive()
             return True
 
         # Don't go to the waypoint if it is already the current waypoint
-        if current_waypoint.id == self.id:
+        if previous_waypoint.id == self.id:
             return True
 
-        # Cannot leave the waypoint if it is not ready
-        if not current_waypoint.state == "ready":
+        # Cannot leave the waypoint if it is not ready or current
+        if previous_waypoint.state not in ["ready", "current"]:
             return False
 
         # Set the new waypoint state to arriving
         self.state = "arriving"
         # Leave the previous waypoint
-        current_waypoint.leave()
+        previous_waypoint.leave()
         # If leaving completed immediately (no plan_leave_id),
         # arrive at the new waypoint
-        if current_waypoint.state == "ready":
+        if previous_waypoint.state in ["ready", "current"]:
             self.arrive()
         return True
 
@@ -175,9 +250,15 @@ class CxTowerJetWaypoint(models.Model):
             bool: True if event was handled else False
         """
         self.ensure_one()
-        if not self.state == "ready":
+        if self.state not in ["ready", "current"]:
             return False
         self.state = "leaving"
+        # Warning! Explicit commit!
+        # This is needed to ensure that the waypoint state is changed
+        # before the leave plan is run.
+        # This is also needed to avoid race conditions with other transactions.
+        if not self.env.context.get("cetmix_tower_no_commit"):
+            self.env.cr.commit()  # pylint: disable=invalid-commit
         plan_leave = self.waypoint_template_id.plan_leave_id
         if plan_leave:
             self.jet_id.run_flight_plan(
@@ -185,6 +266,7 @@ class CxTowerJetWaypoint(models.Model):
                 plan_log={
                     "waypoint_id": self.id,
                 },
+                variable_values=self._get_custom_variable_values(),
             )
         else:
             self.state = "ready"
@@ -207,9 +289,10 @@ class CxTowerJetWaypoint(models.Model):
                 plan_log={
                     "waypoint_id": self.id,
                 },
+                variable_values=self._get_custom_variable_values(),
             )
         else:
-            self.state = "ready"
+            self.state = "current"
             self.jet_id.waypoint_id = self.id
         return True
 
@@ -234,9 +317,10 @@ class CxTowerJetWaypoint(models.Model):
             # when successfully preparing or arriving
             if self.state in ["preparing", "arriving"]:
                 self.jet_id.waypoint_id = self.id
+                self.state = "current"
             elif self.state == "deleting":
                 self.jet_id.waypoint_id = False
-
+                self.unlink()
             elif self.state == "leaving":
                 # Arrive at the destination waypoint
                 destination_waypoint = self.jet_id.waypoint_ids.filtered(
@@ -244,9 +328,7 @@ class CxTowerJetWaypoint(models.Model):
                 )
                 if destination_waypoint:
                     destination_waypoint.arrive()
-
-            # Set the waypoint state to ready (except for deleting state)
-            if self.state != "deleting":
+                # Set the waypoint state to ready after leaving
                 self.state = "ready"
             return True
 
@@ -256,9 +338,9 @@ class CxTowerJetWaypoint(models.Model):
         self.state = "error"
         return True
 
-    # ------------------------------------
-    # --------- Variable Values ---------
-    # ------------------------------------
+    # -----------------------------------
+    # --------- Helper Methods ---------
+    # -----------------------------------
     def _save_variable_values(self):
         """
         Save current jet variable values to the waypoint.
@@ -316,3 +398,27 @@ class CxTowerJetWaypoint(models.Model):
             self.jet_id.set_variable_value(variable_reference, saved_value)
 
         return True
+
+    def _get_custom_variable_values(self):
+        """
+        Prepare custom variable values to pass with flight plans.
+        Following custom values are available:
+
+        __waypoint: waypoint reference
+        __waypoint_type: waypoint template reference
+        __waypoint_state: waypoint state
+        __waypoint_<metadata_key>: waypoint metadata
+
+        Returns:
+            dict: Custom variable values to pass with flight plans
+        """
+        self.ensure_one()
+        custom_values = {
+            "__waypoint": self.reference,
+            "__waypoint_type": self.waypoint_template_id.reference,
+            "__waypoint_state": self.state,
+        }
+        if self.metadata:
+            for key, value in self.metadata.items():
+                custom_values[f"__waypoint_{key}"] = value
+        return custom_values

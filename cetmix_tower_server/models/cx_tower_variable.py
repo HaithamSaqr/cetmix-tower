@@ -835,6 +835,7 @@ class TowerVariable(models.Model):
                 "url": jet.url,
                 "state": jet.state,
             }
+            # Add URL parts if URL is set
             if jet.url:
                 url_parts = urlparse(jet.url)
                 values.update(
@@ -844,6 +845,18 @@ class TowerVariable(models.Model):
                         "port": url_parts.port,
                     }
                 )
+            # Add waypoint values if waypoint is set
+            if jet.waypoint_id:
+                waypoint_data = {
+                    "reference": jet.waypoint_id.reference,
+                    "type": jet.waypoint_id.waypoint_template_id.reference,
+                }
+                # Add each metadata key-value pair to the waypoint data
+                metadata = jet.waypoint_id.metadata
+                if metadata:
+                    for key, value in metadata.items():
+                        waypoint_data[key] = value
+                values.update({"waypoint": waypoint_data})
         return values
 
     def _parse_system_variable_tools(self):

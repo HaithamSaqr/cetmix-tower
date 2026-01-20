@@ -380,15 +380,14 @@
                                 <tree
                                     editable="top"
                                     delete="0"
-                                    decoration-success="is_current"
+                                    decoration-success="state == 'current'"
                                 >
                                     <field name="create_date" />
                                     <field name="name" />
                                     <field name="waypoint_template_id" />
                                     <field name="jet_template_id" invisible="1" />
                                     <field name="state" />
-                                    <field name="can_fly" invisible="1" />
-                                    <field name="is_current" invisible="1" />
+                                    <field name="can_fly_to" invisible="1" />
                                     <button
                                         type="object"
                                         name="prepare"
@@ -396,7 +395,7 @@
                                         string="Prepare"
                                         title="Prepare Waypoint"
                                         confirm="Do you want to prepare this waypoint?"
-                                        attrs="{'invisible': ['|', ('state', '!=', 'draft'), ('can_fly', '=', False)]}"
+                                        attrs="{'invisible': ['|', ('state', '!=', 'draft'), ('can_fly_to', '=', False)]}"
                                     />
                                     <button
                                         type="object"
@@ -405,7 +404,7 @@
                                         string="Fly To"
                                         title="Fly To the Waypoint"
                                         confirm="Do you want to fly to this waypoint?"
-                                        attrs="{'invisible': [('can_fly', '=', False)]}"
+                                        attrs="{'invisible': [('can_fly_to', '=', False)]}"
                                     />
                                 </tree>
                             </field>
