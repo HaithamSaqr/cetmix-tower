@@ -179,6 +179,9 @@ class CxTowerJet(models.Model):
     waypoint_id = fields.Many2one(
         comodel_name="cx.tower.jet.waypoint",
         help="Current waypoint of the jet",
+        readonly=True,
+        copy=False,
+        tracking=True,
     )
 
     # -- Variables used for configuration

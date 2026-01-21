@@ -54,7 +54,7 @@ class CxTowerJetWaypointTemplate(models.Model):
             cx.tower.jet.waypoint: The created waypoint
         """
         self.ensure_one()
-        if not jet.template_id == self.jet_template_id:
+        if not jet.jet_template_id == self.jet_template_id:
             raise ValidationError(
                 _("Jet template does not match the waypoint template")
             )

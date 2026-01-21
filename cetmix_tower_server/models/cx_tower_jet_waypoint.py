@@ -4,6 +4,8 @@
 from odoo import _, api, fields, models
 from odoo.exceptions import ValidationError
 
+from .tools import generate_random_id
+
 
 class CxTowerJetWaypoint(models.Model):
     """Jet Waypoints represent waypoints for jets"""
@@ -30,6 +32,7 @@ class CxTowerJetWaypoint(models.Model):
         ],
         default="draft",
         required=True,
+        readonly=True,
     )
     can_fly_to = fields.Boolean(
         compute="_compute_can_fly_to",
@@ -57,9 +60,17 @@ class CxTowerJetWaypoint(models.Model):
         help="Custom variable values for this waypoint",
         readonly=True,
     )
+    variable_values_text = fields.Text(
+        help="Custom variable values for this waypoint",
+        compute="_compute_json_values_text",
+    )
     metadata = fields.Json(
         help="Additional metadata for this waypoint",
         readonly=True,
+    )
+    metadata_text = fields.Text(
+        help="Additional metadata for this waypoint",
+        compute="_compute_json_values_text",
     )
 
     # ------------------------------------
@@ -82,11 +93,40 @@ class CxTowerJetWaypoint(models.Model):
         are in the "ready" state
         """
         for waypoint in self:
-            waypoint.can_fly_to = waypoint.state == "ready"
+            all_waypoints = waypoint.jet_id.waypoint_ids
+            waypoint.can_fly_to = waypoint.state == "ready" and not bool(
+                all_waypoints.filtered(
+                    lambda w: w.state not in ["ready", "error", "current"]
+                )
+            )
+
+    @api.depends("variable_values")
+    def _compute_json_values_text(self):
+        """
+        Compute the variable values text for the waypoint
+        """
+        for waypoint in self:
+            waypoint.variable_values_text = str(waypoint.variable_values)
+            waypoint.metadata_text = str(waypoint.metadata)
 
     # ------------------------------------
     # --------- CRUD Methods -------------
     # ------------------------------------
+    @api.model_create_multi
+    def create(self, vals_list):
+        """
+        Create waypoints
+        - Generate waypoint reference if not provided
+        """
+
+        for vals in vals_list:
+            if not vals.get("reference"):
+                vals["reference"] = generate_random_id(
+                    sections=4, population=4, separator="_"
+                )
+        jets = super().create(vals_list)
+        return jets
+
     def write(self, vals):
         """
         Write. Do not allow to modify the template
@@ -200,6 +240,8 @@ class CxTowerJetWaypoint(models.Model):
             )
         else:
             self.state = "ready"
+            # Save jet variable values when state changes to ready
+            self._save_variable_values()
         return True
 
     def fly_to(self):
@@ -220,6 +262,8 @@ class CxTowerJetWaypoint(models.Model):
         # Leave the previous waypoint
         previous_waypoint = self.jet_id.waypoint_id
         if not previous_waypoint:
+            # No previous waypoint, set state to arriving
+            # Variable values will be restored in arrive()
             self.state = "arriving"
             self.arrive()
             return True
@@ -234,10 +278,10 @@ class CxTowerJetWaypoint(models.Model):
 
         # Set the new waypoint state to arriving
         self.state = "arriving"
-        # Leave the previous waypoint
+        # Leave the previous waypoint (this will save its variable values)
         previous_waypoint.leave()
         # If leaving completed immediately (no plan_leave_id),
-        # arrive at the new waypoint
+        # arrive at the new waypoint (which will restore variable values)
         if previous_waypoint.state in ["ready", "current"]:
             self.arrive()
         return True
@@ -270,6 +314,8 @@ class CxTowerJetWaypoint(models.Model):
             )
         else:
             self.state = "ready"
+            # Save jet variable values
+            self._save_variable_values()
         return True
 
     def arrive(self):
@@ -282,6 +328,8 @@ class CxTowerJetWaypoint(models.Model):
         self.ensure_one()
         if not self.state == "arriving":
             return False
+        # Restore variable values before running the arrive plan
+        self._restore_variable_values()
         plan_arrive = self.waypoint_template_id.plan_arrive_id
         if plan_arrive:
             self.jet_id.run_flight_plan(
@@ -294,6 +342,8 @@ class CxTowerJetWaypoint(models.Model):
         else:
             self.state = "current"
             self.jet_id.waypoint_id = self.id
+            # Refresh the frontend views
+            self.env.user.reload_views(model="cx.tower.jet", rec_ids=[self.jet_id.id])
         return True
 
     # ---------------------------
@@ -312,30 +362,50 @@ class CxTowerJetWaypoint(models.Model):
         self.ensure_one()
         if plan_log.plan_status == 0:
             # Successfully finished the plan
+            jet = self.jet_id  # preserve in case of deleting
 
-            # Set the waypoint as the current waypoint
-            # when successfully preparing or arriving
-            if self.state in ["preparing", "arriving"]:
+            if self.state == "arriving":
+                # Set the waypoint as the current waypoint
+                # when successfully arriving
                 self.jet_id.waypoint_id = self.id
                 self.state = "current"
             elif self.state == "deleting":
                 self.jet_id.waypoint_id = False
                 self.unlink()
-            elif self.state == "leaving":
+            elif self.state in ["leaving", "preparing"]:
+                # Save jet variable values
+                self._save_variable_values()
+
                 # Arrive at the destination waypoint
-                destination_waypoint = self.jet_id.waypoint_ids.filtered(
-                    lambda w: w.state == "arriving"
-                )
-                if destination_waypoint:
-                    destination_waypoint.arrive()
-                # Set the waypoint state to ready after leaving
+                # if there is any in the arriving state (only for leaving)
+                if self.state == "leaving":
+                    destination_waypoint = self.jet_id.waypoint_ids.filtered(
+                        lambda w: w.state == "arriving"
+                    )
+                    if destination_waypoint:
+                        destination_waypoint.arrive()
+
+                # Set the waypoint state to ready after leaving or preparing
                 self.state = "ready"
+
+            # Refresh the frontend views
+            self.env.user.reload_views(model="cx.tower.jet", rec_ids=[jet.id])
             return True
 
         # Failed to finish the plan
+        # - restore variable values from current waypoint
         # - set the waypoint state to error
-        # - don't change the current waypoint
+        if self.state == "arriving":
+            # Restore variable values from jet's current waypoint
+            current_waypoint = self.jet_id.waypoint_id
+            if current_waypoint:
+                current_waypoint._restore_variable_values()
+                # Set current waypoint state to "current"
+                current_waypoint.state = "current"
         self.state = "error"
+
+        # Refresh the frontend views
+        self.env.user.reload_views(model="cx.tower.jet", rec_ids=[self.jet_id.id])
         return True
 
     # -----------------------------------

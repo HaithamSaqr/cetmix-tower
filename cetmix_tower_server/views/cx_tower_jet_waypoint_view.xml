@@ -7,6 +7,9 @@
         <field name="model">cx.tower.jet.waypoint</field>
         <field name="arch" type="xml">
             <form>
+                <header>
+                    <field name="state" widget="statusbar" />
+                </header>
                 <sheet>
                     <div class="oe_title">
                         <h1>
@@ -20,13 +23,29 @@
                         <group name="waypoint_form_general">
                             <field
                                 name="reference"
-                                groups="base.group_no_one"
-                                placeholder="leave blank to autogenerate"
+                                attrs="{'invisible': [('reference', '=', False)]}"
+                                readonly="1"
                             />
-                            <field name="access_level" />
-                            <field name="jet_id" />
-                            <field name="waypoint_template_id" />
+                            <field
+                                name="waypoint_template_id"
+                                options="{'no_create': '1', 'no_quick_create': '1'}"
+                            />
+                            <field name="jet_id" invisible="1" />
                             <field name="jet_template_id" invisible="1" />
+                        </group>
+                        <group name="data" groups="base.group_no_one">
+                            <field name="variable_values" invisible="1" />
+                            <field
+                                name="variable_values_text"
+                                string="Variable Values"
+                                attrs="{'invisible': [('variable_values', '=', False)]}"
+                            />
+                            <field name="metadata" invisible="1" />
+                            <field
+                                name="metadata_text"
+                                string="Metadata"
+                                attrs="{'invisible': [('metadata', '=', False)]}"
+                            />
                         </group>
                     </group>
                 </sheet>

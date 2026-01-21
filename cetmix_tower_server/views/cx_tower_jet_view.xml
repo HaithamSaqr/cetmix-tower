@@ -377,16 +377,11 @@
                             string="Waypoints"
                         >
                             <field name="waypoint_ids">
-                                <tree
-                                    editable="top"
-                                    delete="0"
-                                    decoration-success="state == 'current'"
-                                >
+                                <tree decoration-success="state == 'current'">
                                     <field name="create_date" />
                                     <field name="name" />
                                     <field name="waypoint_template_id" />
                                     <field name="jet_template_id" invisible="1" />
-                                    <field name="state" />
                                     <field name="can_fly_to" invisible="1" />
                                     <button
                                         type="object"
@@ -395,7 +390,7 @@
                                         string="Prepare"
                                         title="Prepare Waypoint"
                                         confirm="Do you want to prepare this waypoint?"
-                                        attrs="{'invisible': ['|', ('state', '!=', 'draft'), ('can_fly_to', '=', False)]}"
+                                        attrs="{'invisible': [('state', '!=', 'draft')]}"
                                     />
                                     <button
                                         type="object"
@@ -406,6 +401,7 @@
                                         confirm="Do you want to fly to this waypoint?"
                                         attrs="{'invisible': [('can_fly_to', '=', False)]}"
                                     />
+                                    <field name="state" />
                                 </tree>
                             </field>
                         </page>

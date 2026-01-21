@@ -534,18 +534,19 @@ class TestTowerJetWaypoint(TestTowerJetsCommon):
         # Should return True
         self.assertTrue(result, "Should return True")
 
-        # State should be set to current after successful plan completion
-        # (plan executes synchronously in tests)
+        # State should be set to ready after successful plan completion
+        # (plan executes synchronously in tests, preparing -> ready)
         self.assertEqual(
             waypoint.state,
-            "current",
-            "State should be set to current after successful plan completion",
+            "ready",
+            "State should be set to ready after successful plan completion",
         )
-        # Waypoint should be set as current waypoint
-        self.assertEqual(
-            self.jet_test.waypoint_id.id,
+        # Waypoint should NOT be set as current waypoint after preparing
+        # (only arriving sets waypoint as current)
+        self.assertNotEqual(
+            self.jet_test.waypoint_id.id if self.jet_test.waypoint_id else False,
             waypoint.id,
-            "Waypoint should be set as current waypoint after successful prepare",
+            "Waypoint should not be set as current waypoint after preparing",
         )
 
     def test_prepare_with_flight_plan_error(self):
@@ -638,18 +639,19 @@ class TestTowerJetWaypoint(TestTowerJetsCommon):
 
         # Should return True
         self.assertTrue(result, "Should return True")
-        # State should be set to current
-        # (waypoint becomes current after successful prepare)
+        # State should be set to ready
+        # (preparing -> ready, not current)
         self.assertEqual(
             waypoint.state,
-            "current",
-            "State should be set to current after successful plan completion",
+            "ready",
+            "State should be set to ready after successful plan completion",
         )
-        # Waypoint should be set as current waypoint
-        self.assertEqual(
-            self.jet_test.waypoint_id.id,
+        # Waypoint should NOT be set as current waypoint after preparing
+        # (only arriving sets waypoint as current)
+        self.assertNotEqual(
+            self.jet_test.waypoint_id.id if self.jet_test.waypoint_id else False,
             waypoint.id,
-            "Waypoint should be set as current waypoint after successful prepare",
+            "Waypoint should not be set as current waypoint after preparing",
         )
 
     def test_plan_finished_arriving_success(self):
@@ -1148,4 +1150,335 @@ class TestTowerJetWaypoint(TestTowerJetsCommon):
             waypoint.state,
             "current",
             "Waypoint state should remain current",
+        )
+
+    def test_prepare_saves_variable_values(self):
+        """
+        Test that prepare() saves variable values when state changes to ready
+        """
+        # Set some variable values on the jet
+        self.jet_test.set_variable_value("test_var_1", "value1")
+        self.jet_test.set_variable_value("test_var_2", "value2")
+
+        # Create waypoint in draft state
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "draft",
+            }
+        )
+
+        # Ensure waypoint has no plan_create_id (so it goes directly to ready)
+        waypoint.waypoint_template_id.plan_create_id = False
+
+        # Call prepare
+        waypoint.prepare()
+
+        # Variable values should be saved in waypoint
+        variable_values = waypoint.variable_values or {}
+        self.assertEqual(
+            variable_values.get("test_var_1"),
+            "value1",
+            "Variable value should be saved when preparing",
+        )
+        self.assertEqual(
+            variable_values.get("test_var_2"),
+            "value2",
+            "Variable value should be saved when preparing",
+        )
+
+    def test_prepare_with_plan_saves_variable_values(self):
+        """
+        Test that prepare() saves variable values when plan completes
+        """
+        # Set some variable values on the jet
+        self.jet_test.set_variable_value("test_var_1", "value1")
+        self.jet_test.set_variable_value("test_var_2", "value2")
+
+        # Create waypoint template with plan_create_id
+        waypoint_template = self.JetWaypointTemplate.create(
+            {
+                "name": "Test Template",
+                "jet_template_id": self.jet_template_test.id,
+                "plan_create_id": self.plan_success.id,
+            }
+        )
+
+        # Create waypoint in draft state
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": waypoint_template.id,
+                "state": "draft",
+            }
+        )
+
+        # Call prepare (plan executes synchronously in tests)
+        waypoint.prepare()
+
+        # Variable values should be saved in waypoint after plan completes
+        variable_values = waypoint.variable_values or {}
+        self.assertEqual(
+            variable_values.get("test_var_1"),
+            "value1",
+            "Variable value should be saved when preparing completes",
+        )
+        self.assertEqual(
+            variable_values.get("test_var_2"),
+            "value2",
+            "Variable value should be saved when preparing completes",
+        )
+
+    def test_leave_saves_variable_values(self):
+        """
+        Test that leave() saves variable values when state changes to ready
+        """
+        # Set some variable values on the jet
+        self.jet_test.set_variable_value("test_var_1", "value1")
+        self.jet_test.set_variable_value("test_var_2", "value2")
+
+        # Create waypoint in current state
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "current",
+            }
+        )
+        self.jet_test.waypoint_id = waypoint.id
+
+        # Ensure waypoint has no plan_leave_id (so it goes directly to ready)
+        waypoint.waypoint_template_id.plan_leave_id = False
+
+        # Call leave
+        waypoint.leave()
+
+        # Variable values should be saved in waypoint
+        variable_values = waypoint.variable_values or {}
+        self.assertEqual(
+            variable_values.get("test_var_1"),
+            "value1",
+            "Variable value should be saved when leaving",
+        )
+        self.assertEqual(
+            variable_values.get("test_var_2"),
+            "value2",
+            "Variable value should be saved when leaving",
+        )
+
+    def test_leave_with_plan_saves_variable_values(self):
+        """
+        Test that leave() saves variable values when plan completes
+        """
+        # Set some variable values on the jet
+        self.jet_test.set_variable_value("test_var_1", "value1")
+        self.jet_test.set_variable_value("test_var_2", "value2")
+
+        # Create waypoint template with plan_leave_id
+        waypoint_template = self.JetWaypointTemplate.create(
+            {
+                "name": "Test Template",
+                "jet_template_id": self.jet_template_test.id,
+                "plan_leave_id": self.plan_success.id,
+            }
+        )
+
+        # Create waypoint in current state
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": waypoint_template.id,
+                "state": "current",
+            }
+        )
+        self.jet_test.waypoint_id = waypoint.id
+
+        # Call leave (plan executes synchronously in tests)
+        waypoint.leave()
+
+        # Variable values should be saved in waypoint after plan completes
+        variable_values = waypoint.variable_values or {}
+        self.assertEqual(
+            variable_values.get("test_var_1"),
+            "value1",
+            "Variable value should be saved when leaving completes",
+        )
+        self.assertEqual(
+            variable_values.get("test_var_2"),
+            "value2",
+            "Variable value should be saved when leaving completes",
+        )
+
+    def test_fly_to_restores_variable_values(self):
+        """
+        Test that fly_to() restores variable values when state changes to arriving
+        """
+        # Create waypoint with saved variable values
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "ready",
+                "variable_values": {
+                    "test_var_1": "saved_value1",
+                    "test_var_2": "saved_value2",
+                },
+            }
+        )
+
+        # Set different values on the jet
+        self.jet_test.set_variable_value("test_var_1", "current_value1")
+        self.jet_test.set_variable_value("test_var_2", "current_value2")
+
+        # Call fly_to (no previous waypoint)
+        waypoint.fly_to()
+
+        # Variable values should be restored from waypoint
+        self.assertEqual(
+            self.jet_test.get_variable_value("test_var_1"),
+            "saved_value1",
+            "Variable value should be restored when flying to waypoint",
+        )
+        self.assertEqual(
+            self.jet_test.get_variable_value("test_var_2"),
+            "saved_value2",
+            "Variable value should be restored when flying to waypoint",
+        )
+
+    def test_fly_to_restores_variable_values_with_previous_waypoint(self):
+        """
+        Test that fly_to() restores variable values
+        after previous waypoint saves its values
+        """
+        # Create previous waypoint in current state
+        previous_waypoint = self.JetWaypoint.create(
+            {
+                "name": "Previous Waypoint",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "current",
+            }
+        )
+        self.jet_test.waypoint_id = previous_waypoint.id
+
+        # Set variable values on the jet
+        self.jet_test.set_variable_value("test_var_1", "previous_value1")
+        self.jet_test.set_variable_value("test_var_2", "previous_value2")
+
+        # Create destination waypoint with saved variable values
+        destination_waypoint = self.JetWaypoint.create(
+            {
+                "name": "Destination Waypoint",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "ready",
+                "variable_values": {
+                    "test_var_1": "destination_value1",
+                    "test_var_2": "destination_value2",
+                },
+            }
+        )
+
+        # Ensure previous waypoint has no plan_leave_id (so it saves values immediately)
+        previous_waypoint.waypoint_template_id.plan_leave_id = False
+
+        # Call fly_to
+        destination_waypoint.fly_to()
+
+        # Previous waypoint should have saved its values
+        previous_values = previous_waypoint.variable_values or {}
+        self.assertEqual(
+            previous_values.get("test_var_1"),
+            "previous_value1",
+            "Previous waypoint should save its variable values",
+        )
+
+        # Variable values should be restored from destination waypoint
+        self.assertEqual(
+            self.jet_test.get_variable_value("test_var_1"),
+            "destination_value1",
+            "Variable value should be restored from destination waypoint",
+        )
+        self.assertEqual(
+            self.jet_test.get_variable_value("test_var_2"),
+            "destination_value2",
+            "Variable value should be restored from destination waypoint",
+        )
+
+    def test_arriving_error_restores_variable_values(self):
+        """
+        Test that when arriving fails,
+        variable values are restored from current waypoint
+        """
+        # Create current waypoint with saved variable values
+        current_waypoint = self.JetWaypoint.create(
+            {
+                "name": "Current Waypoint",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "current",
+                "variable_values": {
+                    "test_var_1": "current_value1",
+                    "test_var_2": "current_value2",
+                },
+            }
+        )
+        self.jet_test.waypoint_id = current_waypoint.id
+
+        # Create arriving waypoint
+        arriving_waypoint = self.JetWaypoint.create(
+            {
+                "name": "Arriving Waypoint",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "arriving",
+            }
+        )
+
+        # Set different values on the jet
+        self.jet_test.set_variable_value("test_var_1", "arriving_value1")
+        self.jet_test.set_variable_value("test_var_2", "arriving_value2")
+
+        # Create plan log with error status
+        plan_log = self.PlanLog.create(
+            {
+                "server_id": self.jet_test.server_id.id,
+                "plan_id": self.plan_error.id,
+                "plan_status": -100,  # Error
+            }
+        )
+
+        # Call _plan_finished with error
+        arriving_waypoint._plan_finished(plan_log)
+
+        # Variable values should be restored from current waypoint
+        self.assertEqual(
+            self.jet_test.get_variable_value("test_var_1"),
+            "current_value1",
+            "Variable value should be restored from current waypoint on error",
+        )
+        self.assertEqual(
+            self.jet_test.get_variable_value("test_var_2"),
+            "current_value2",
+            "Variable value should be restored from current waypoint on error",
+        )
+
+        # Current waypoint state should be "current"
+        self.assertEqual(
+            current_waypoint.state,
+            "current",
+            "Current waypoint state should remain current",
+        )
+
+        # Arriving waypoint state should be "error"
+        self.assertEqual(
+            arriving_waypoint.state,
+            "error",
+            "Arriving waypoint state should be error",
         )
