@@ -252,6 +252,7 @@
                         >
                             <field name="waypoint_template_ids">
                                 <tree>
+                                    <field name="sequence" widget="handle" />
                                     <field name="name" />
                                     <field name="access_level" optional="hide" />
                                 </tree>

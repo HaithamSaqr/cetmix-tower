@@ -1,10 +1,13 @@
 # Copyright (C) 2024 Cetmix OÜ
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
+import logging
 
 from odoo import _, api, fields, models
 from odoo.exceptions import ValidationError
 
 from .tools import generate_random_id
+
+_logger = logging.getLogger(__name__)
 
 
 class CxTowerJetWaypoint(models.Model):
@@ -29,6 +32,7 @@ class CxTowerJetWaypoint(models.Model):
             ("leaving", "Leaving"),
             ("current", "Current"),
             ("deleting", "Deleting"),
+            ("deleted", "Deleted"),
         ],
         default="draft",
         required=True,
@@ -37,6 +41,9 @@ class CxTowerJetWaypoint(models.Model):
     can_fly_to = fields.Boolean(
         compute="_compute_can_fly_to",
         readonly=True,
+    )
+    is_destination = fields.Boolean(
+        help="Indicates if this waypoint is the current destination",
     )
     jet_id = fields.Many2one(
         comodel_name="cx.tower.jet",
@@ -166,13 +173,13 @@ class CxTowerJetWaypoint(models.Model):
         # Need to run the on_delete flight plan:
         # - waypoint is in the 'ready' or 'error' state and template has
         #  on_delete flight plan
+        if self._context.get("waypoint_force_delete"):
+            return super().unlink()
 
         waypoints_to_delete = self.browse()
         waypoints_to_run_delete_plan = self.browse()
         for waypoint in self:
-            if waypoint.state in ["arriving", "leaving", "preparing", "current"]:
-                if self._context.get("waypoint_no_raise_on_delete"):
-                    continue
+            if waypoint.state not in ["draft", "deleted", "error", "ready"]:
                 if waypoint.state == "current":
                     exception_message = _(
                         "Cannot delete the waypoint %(waypoint)s because it is"
@@ -187,6 +194,9 @@ class CxTowerJetWaypoint(models.Model):
                         waypoint=waypoint.name,
                         state=waypoint.state,
                     )
+                if self._context.get("waypoint_no_raise_on_delete"):
+                    _logger.error(exception_message)
+                    continue
                 raise ValidationError(exception_message)
             if (
                 waypoint.state in ["ready", "error"]
@@ -242,6 +252,13 @@ class CxTowerJetWaypoint(models.Model):
             self.state = "ready"
             # Save jet variable values when state changes to ready
             self._save_variable_values()
+
+            # Refresh the frontend views
+            self.env.user.reload_views(model="cx.tower.jet", rec_ids=[self.jet_id.id])
+
+            # Fly to this waypoint if set as destination
+            if self.is_destination:
+                self.fly_to()
         return True
 
     def fly_to(self):
@@ -249,6 +266,8 @@ class CxTowerJetWaypoint(models.Model):
         Fly to the waypoint
         """
         self.ensure_one()
+        # Clear destination flag in case fly_to doesn't work
+        self.is_destination = False
         if self.state != "ready":
             return False
 
@@ -264,7 +283,7 @@ class CxTowerJetWaypoint(models.Model):
         if not previous_waypoint:
             # No previous waypoint, set state to arriving
             # Variable values will be restored in arrive()
-            self.state = "arriving"
+            self.write({"state": "arriving", "is_destination": True})
             self.arrive()
             return True
 
@@ -277,7 +296,8 @@ class CxTowerJetWaypoint(models.Model):
             return False
 
         # Set the new waypoint state to arriving
-        self.state = "arriving"
+        # Mark this waypoint as destination
+        self.write({"state": "arriving", "is_destination": True})
         # Leave the previous waypoint (this will save its variable values)
         previous_waypoint.leave()
         # If leaving completed immediately (no plan_leave_id),
@@ -340,7 +360,8 @@ class CxTowerJetWaypoint(models.Model):
                 variable_values=self._get_custom_variable_values(),
             )
         else:
-            self.state = "current"
+            # Clear destination flag when arriving without plan
+            self.write({"is_destination": False, "state": "current"})
             self.jet_id.waypoint_id = self.id
             # Refresh the frontend views
             self.env.user.reload_views(model="cx.tower.jet", rec_ids=[self.jet_id.id])
@@ -368,9 +389,10 @@ class CxTowerJetWaypoint(models.Model):
                 # Set the waypoint as the current waypoint
                 # when successfully arriving
                 self.jet_id.waypoint_id = self.id
-                self.state = "current"
+                # Clear destination flag when successfully arrived
+                self.write({"state": "current", "is_destination": False})
             elif self.state == "deleting":
-                self.jet_id.waypoint_id = False
+                self.state = "deleted"
                 self.unlink()
             elif self.state in ["leaving", "preparing"]:
                 # Save jet variable values
@@ -386,7 +408,11 @@ class CxTowerJetWaypoint(models.Model):
                         destination_waypoint.arrive()
 
                 # Set the waypoint state to ready after leaving or preparing
+                prepared = self.state == "preparing"
                 self.state = "ready"
+                # Fly to this waypoint if set as destination
+                if self.is_destination and prepared:
+                    self.fly_to()
 
             # Refresh the frontend views
             self.env.user.reload_views(model="cx.tower.jet", rec_ids=[jet.id])
@@ -402,7 +428,10 @@ class CxTowerJetWaypoint(models.Model):
                 current_waypoint._restore_variable_values()
                 # Set current waypoint state to "current"
                 current_waypoint.state = "current"
-        self.state = "error"
+            # Clear destination flag when arriving fails
+            self.write({"is_destination": False, "state": "error"})
+        else:
+            self.state = "error"
 
         # Refresh the frontend views
         self.env.user.reload_views(model="cx.tower.jet", rec_ids=[self.jet_id.id])

@@ -2,6 +2,7 @@
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
 from odoo.exceptions import ValidationError
+from odoo.tools import mute_logger
 
 from .common_jets import TestTowerJetsCommon
 
@@ -511,6 +512,56 @@ class TestTowerJetWaypoint(TestTowerJetsCommon):
             "State should be set to ready when no flight plan",
         )
 
+    def test_prepare_without_flight_plan_with_is_destination(self):
+        """
+        Test prepare() when waypoint template has no plan_create_id
+        and is_destination=True
+        Should automatically call fly_to() when prepare completes
+        """
+        # Create waypoint template without plan_create_id
+        waypoint_template_no_plan = self.JetWaypointTemplate.create(
+            {
+                "name": "Test Waypoint Template No Plan Destination",
+                "jet_template_id": self.jet_template_test.id,
+            }
+        )
+
+        # Create waypoint in draft state with is_destination=True
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint No Plan Destination",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": waypoint_template_no_plan.id,
+                "state": "draft",
+                "is_destination": True,
+            }
+        )
+
+        # Call prepare
+        result = waypoint.prepare()
+
+        # Should return True
+        self.assertTrue(result, "Should return True")
+        # State should be set to current (because fly_to() was called)
+        # Since there's no previous waypoint and no plan_arrive_id,
+        # fly_to() sets state to arriving and calls arrive() which sets it to current
+        self.assertEqual(
+            waypoint.state,
+            "current",
+            "State should be set to current after fly_to() and arrive()",
+        )
+        # Waypoint should be set as current waypoint
+        self.assertEqual(
+            self.jet_test.waypoint_id.id,
+            waypoint.id,
+            "Waypoint should be set as current waypoint after fly_to()",
+        )
+        # is_destination should be cleared after arriving
+        self.assertFalse(
+            waypoint.is_destination,
+            "is_destination should be cleared after arriving",
+        )
+
     def test_prepare_with_flight_plan_success(self):
         """
         Test prepare() when waypoint template has plan_create_id and plan succeeds
@@ -654,6 +705,56 @@ class TestTowerJetWaypoint(TestTowerJetsCommon):
             "Waypoint should not be set as current waypoint after preparing",
         )
 
+    def test_plan_finished_preparing_success_with_is_destination(self):
+        """
+        Test _plan_finished when waypoint is in preparing state with is_destination=True
+        Should automatically call fly_to() when preparing finishes
+        """
+        # Create waypoint in preparing state with is_destination=True
+        waypoint = self.JetWaypoint.create(
+            {
+                "name": "Test Waypoint Preparing Destination",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "preparing",
+                "is_destination": True,
+            }
+        )
+
+        # Create plan log with success status
+        plan_log = self.PlanLog.create(
+            {
+                "server_id": self.jet_test.server_id.id,
+                "plan_id": self.plan_success.id,
+                "plan_status": 0,  # Success
+            }
+        )
+
+        # Call _plan_finished
+        result = waypoint._plan_finished(plan_log)
+
+        # Should return True
+        self.assertTrue(result, "Should return True")
+        # State should be set to arriving (because fly_to() was called)
+        # Since there's no previous waypoint and no plan_arrive_id,
+        # fly_to() sets state to arriving and calls arrive() which sets it to current
+        self.assertEqual(
+            waypoint.state,
+            "current",
+            "State should be set to current after fly_to() and arrive()",
+        )
+        # Waypoint should be set as current waypoint
+        self.assertEqual(
+            self.jet_test.waypoint_id.id,
+            waypoint.id,
+            "Waypoint should be set as current waypoint after fly_to()",
+        )
+        # is_destination should be cleared after arriving
+        self.assertFalse(
+            waypoint.is_destination,
+            "is_destination should be cleared after arriving",
+        )
+
     def test_plan_finished_arriving_success(self):
         """
         Test _plan_finished when waypoint is in arriving state and plan succeeds
@@ -722,7 +823,8 @@ class TestTowerJetWaypoint(TestTowerJetsCommon):
         )
 
         # Set current waypoint to leaving state
-        current_waypoint.state = "leaving"
+        # readonly=True only affects UI, can be written programmatically
+        current_waypoint.write({"state": "leaving"})
 
         # Create plan log with success status
         plan_log = self.PlanLog.create(
@@ -761,23 +863,90 @@ class TestTowerJetWaypoint(TestTowerJetsCommon):
             " after leaving completes",
         )
 
+    def test_plan_finished_leaving_success_with_is_destination(self):
+        """
+        Test _plan_finished when waypoint is in leaving state with is_destination=True
+        Should NOT automatically call fly_to() when leaving finishes
+        """
+        # Create current waypoint in current state
+        current_waypoint = self.JetWaypoint.create(
+            {
+                "name": "Current Waypoint",
+                "jet_id": self.jet_test.id,
+                "waypoint_template_id": self.waypoint_template.id,
+                "state": "current",
+            }
+        )
+        self.jet_test.waypoint_id = current_waypoint.id
+
+        # Set current waypoint to leaving state with is_destination=True
+        # readonly=True only affects UI, can be written programmatically
+        current_waypoint.write({"state": "leaving", "is_destination": True})
+
+        # Create plan log with success status
+        plan_log = self.PlanLog.create(
+            {
+                "server_id": self.jet_test.server_id.id,
+                "plan_id": self.plan_success.id,
+                "plan_status": 0,  # Success
+            }
+        )
+
+        # Call _plan_finished on leaving waypoint
+        result = current_waypoint._plan_finished(plan_log)
+
+        # Should return True
+        self.assertTrue(result, "Should return True")
+        # Leaving waypoint state should be set to ready
+        self.assertEqual(
+            current_waypoint.state,
+            "ready",
+            "Leaving waypoint state should be set to ready",
+        )
+        # is_destination should remain True
+        # (not cleared because fly_to() was not called)
+        # Note: fly_to() is not called because prepared=False
+        # (state was "leaving")
+        self.assertTrue(
+            current_waypoint.is_destination,
+            "is_destination should remain True when leaving finishes"
+            " (fly_to() should not be called)",
+        )
+        # Current waypoint should remain the same (no fly_to() was called)
+        self.assertEqual(
+            self.jet_test.waypoint_id.id,
+            current_waypoint.id,
+            "Current waypoint should remain the same"
+            " (fly_to() should not be called)",
+        )
+
     def test_plan_finished_deleting_success(self):
         """
         Test _plan_finished when waypoint is in deleting state and plan succeeds
         """
+        # Create waypoint template with plan_delete_id
+        waypoint_template = self.JetWaypointTemplate.create(
+            {
+                "name": "Test Template With Delete Plan",
+                "jet_template_id": self.jet_template_test.id,
+                "plan_delete_id": self.plan_success.id,
+            }
+        )
+
         # Create waypoint and set it as current
         waypoint = self.JetWaypoint.create(
             {
                 "name": "Test Waypoint Deleting",
                 "jet_id": self.jet_test.id,
-                "waypoint_template_id": self.waypoint_template.id,
+                "waypoint_template_id": waypoint_template.id,
                 "state": "ready",
             }
         )
         self.jet_test.waypoint_id = waypoint.id
 
         # Set waypoint to deleting state
-        waypoint.state = "deleting"
+        # readonly=True only affects UI, can be written programmatically
+        waypoint.write({"state": "deleting"})
 
         # Create plan log with success status
         plan_log = self.PlanLog.create(
@@ -794,6 +963,7 @@ class TestTowerJetWaypoint(TestTowerJetsCommon):
         # Should return True
         self.assertTrue(result, "Should return True")
         # Waypoint should be unlinked (deleted)
+        # State is set to "deleted" before unlink
         self.assertFalse(
             waypoint.exists(),
             "Waypoint should be unlinked after successful delete plan",
@@ -1132,8 +1302,12 @@ class TestTowerJetWaypoint(TestTowerJetsCommon):
         self.jet_test.waypoint_id = waypoint.id
         waypoint_id = waypoint.id
 
-        # Should not raise error with waypoint_no_raise_on_delete context
-        waypoint.with_context(waypoint_no_raise_on_delete=True).unlink()
+        # Mute logger error for this test
+        with mute_logger(
+            "odoo.addons.cetmix_tower_server.models.cx_tower_jet_waypoint"
+        ):
+            # Should not raise error with waypoint_no_raise_on_delete context
+            waypoint.with_context(waypoint_no_raise_on_delete=True).unlink()
 
         # Waypoint should still exist (not deleted)
         # The context only prevents exception, but doesn't allow deletion

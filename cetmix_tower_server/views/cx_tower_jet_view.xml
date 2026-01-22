@@ -375,14 +375,21 @@
                             name="waypoints"
                             groups="cetmix_tower_server.group_manager"
                             string="Waypoints"
+                            attrs="{'invisible': [('is_waypoints_available', '=', False)]}"
                         >
+                            <field name="is_waypoints_available" invisible="1" />
                             <field name="waypoint_ids">
-                                <tree decoration-success="state == 'current'">
+                                <tree
+                                    delete="0"
+                                    decoration-success="state == 'current'"
+                                >
                                     <field name="create_date" />
                                     <field name="name" />
+                                    <field name="reference" optional="hide" />
                                     <field name="waypoint_template_id" />
                                     <field name="jet_template_id" invisible="1" />
                                     <field name="can_fly_to" invisible="1" />
+                                    <field name="state" />
                                     <button
                                         type="object"
                                         name="prepare"
@@ -396,12 +403,20 @@
                                         type="object"
                                         name="fly_to"
                                         icon="fa-plane"
-                                        string="Fly To"
-                                        title="Fly To the Waypoint"
+                                        string="Fly here"
+                                        title="Fly to this waypoint"
                                         confirm="Do you want to fly to this waypoint?"
                                         attrs="{'invisible': [('can_fly_to', '=', False)]}"
                                     />
-                                    <field name="state" />
+                                    <button
+                                        type="object"
+                                        name="unlink"
+                                        icon="fa-trash"
+                                        string="Delete"
+                                        title="Delete the Waypoint"
+                                        confirm="Do you want to delete this waypoint? This action cannot be undone."
+                                        attrs="{'invisible': [('state', 'not in', [False, 'draft', 'deleted', 'ready', 'error'])]}"
+                                    />
                                 </tree>
                             </field>
                         </page>
